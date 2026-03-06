@@ -13,11 +13,13 @@
  *      e.g. pbpaste | dev-monitor save --title "bug fix"
  */
 
-import { promises as fs } from 'fs';
+import { promises as fs }  from 'fs';
 import { createInterface }  from 'readline';
 import path                 from 'path';
 import os                   from 'os';
 import { sendEvent }        from './apiClient.js';
+
+const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 const SESSIONS_DIR  = path.join(os.homedir(), '.dev-monitor', 'sessions');
 const LAST_PTR_FILE = path.join(SESSIONS_DIR, '.last');
@@ -143,7 +145,142 @@ function parseGenericSession(rawContent) {
   return messages;
 }
 
+/**
+ * Strip PowerShell Start-Transcript header/footer blocks then delegate
+ * to the appropriate parser.
+ *
+ * Transcript files wrap everything in `****...****` header/footer lines:
+ *   **********************
+ *   Windows PowerShell transcript start
+ *   ...metadata...
+ *   **********************
+ *   <actual session content>
+ *   **********************
+ *   Windows PowerShell transcript end
+ *   **********************
+ */
+function parseTranscriptSession(rawContent, tool) {
+  const lines        = rawContent.split('\n');
+  const bodyLines    = [];
+  let   inMetaBlock  = false;
+
+  for (const line of lines) {
+    // Lines of 20+ asterisks mark the start/end of a header/footer block
+    if (/^\*{20,}$/.test(line.trim())) {
+      inMetaBlock = !inMetaBlock;
+      continue;
+    }
+    // Skip metadata lines inside header blocks and the Transcript start/end lines
+    if (inMetaBlock) continue;
+    if (/^Transcript (started|stopped),/i.test(line.trim())) continue;
+
+    bodyLines.push(line);
+  }
+
+  const body = bodyLines.join('\n');
+
+  // Delegate to the right parser based on content
+  if (tool === 'ollama' || body.includes('>>> ')) return parseOllamaSession(body);
+  return parseGenericSession(body);
+}
+
+// ── Claude Code JSONL parser ──────────────────────────────────────────────────
+
+/**
+ * Convert a filesystem path to the slug Claude Code uses as the project dir name.
+ * Claude replaces "/" and "." with "-":
+ *   /Users/kalaimaran.m/Documents/foo  →  -Users-kalaimaran-m-Documents-foo
+ */
+function cwdToClaudeSlug(cwd) {
+  return cwd.replace(/[/.]/g, '-');
+}
+
+/**
+ * Parse a Claude Code JSONL session file into [{request, response}] pairs.
+ *
+ * Each line is a JSON event. Relevant entries:
+ *   { type:'user',      message:{ role:'user',      content:[...] }, toolUseResult:undefined }
+ *   { type:'assistant', message:{ role:'assistant', content:[...] } }
+ *
+ * Rules:
+ *   - Real human turns: role==='user'  AND  toolUseResult === undefined
+ *   - Skip tool-result injections:  role==='user' with toolUseResult defined
+ *   - Collect ALL assistant text blocks between two human turns as the response
+ */
+export function parseClaudeJsonl(rawContent) {
+  const lines    = rawContent.trim().split('\n');
+  const messages = [];
+  let   pendingUser   = null;   // current human message text
+  let   assistantBuf  = [];     // accumulated assistant text for this turn
+
+  const flush = () => {
+    if (pendingUser && assistantBuf.length > 0) {
+      messages.push({ request: pendingUser, response: assistantBuf.join('\n\n').trim() });
+    }
+    assistantBuf = [];
+  };
+
+  for (const line of lines) {
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj.message) continue;
+
+    const { role, content } = obj.message;
+    const blocks = Array.isArray(content)
+      ? content
+      : [{ type: 'text', text: String(content ?? '') }];
+    const textContent = blocks
+      .filter(c => c.type === 'text' && c.text?.trim())
+      .map(c => c.text.trim())
+      .join('\n');
+
+    if (role === 'user' && obj.toolUseResult === undefined && textContent) {
+      // New human turn — flush previous pair first
+      flush();
+      pendingUser = textContent;
+
+    } else if (role === 'assistant' && textContent && pendingUser !== null) {
+      assistantBuf.push(textContent);
+    }
+  }
+  flush(); // flush last pair
+  return messages;
+}
+
+/**
+ * Find and parse the most recent Claude Code session for the given cwd.
+ * Looks in ~/.claude/projects/<slug>/*.jsonl (excludes subagent files).
+ */
+async function parseClaudeCodeSession(cwd) {
+  const slug       = cwdToClaudeSlug(cwd);
+  const projectDir = path.join(CLAUDE_PROJECTS_DIR, slug);
+
+  let entries;
+  try { entries = await fs.readdir(projectDir); }
+  catch { return []; }
+
+  // Top-level JSONL files only (skip subagents/ subdirectory)
+  const jsonlPaths = entries
+    .filter(f => f.endsWith('.jsonl'))
+    .map(f => path.join(projectDir, f));
+
+  if (jsonlPaths.length === 0) return [];
+
+  // Pick the most recently modified file
+  const withStats = await Promise.all(
+    jsonlPaths.map(async f => ({ f, mtime: (await fs.stat(f)).mtimeMs }))
+  );
+  withStats.sort((a, b) => b.mtime - a.mtime);
+
+  const raw = await fs.readFile(withStats[0].f, 'utf8');
+  return parseClaudeJsonl(raw);
+}
+
 function parseSession(rawContent, tool) {
+  // Detect PowerShell Start-Transcript output (Windows)
+  if (rawContent.includes('PowerShell transcript start')) {
+    return parseTranscriptSession(rawContent, tool);
+  }
   // ollama uses ">>> " prompts; check raw bytes (not stripped)
   if (tool === 'ollama' || rawContent.includes('>>> ')) {
     return parseOllamaSession(rawContent);
@@ -207,9 +344,9 @@ export async function saveConversation({ title, aiService, workingDirectory } = 
   }
 
   // ── AUTO MODE — read last recorded session ────────────────────────────────
-  let sessionFile;
+  let lastPtr;
   try {
-    sessionFile = (await fs.readFile(LAST_PTR_FILE, 'utf8')).trim();
+    lastPtr = (await fs.readFile(LAST_PTR_FILE, 'utf8')).trim();
   } catch {
     console.log(chalk.yellow(
       'No recorded AI session found.\n' +
@@ -219,23 +356,61 @@ export async function saveConversation({ title, aiService, workingDirectory } = 
     return;
   }
 
-  // Detect tool name from filename  (e.g. "ollama-1741234567.txt" → "ollama")
-  const toolFromFile = path.basename(sessionFile).split('-')[0];
-  const service      = aiService || toolFromFile || 'ai';
+  let messages;
+  let service;
 
-  let rawContent;
-  try {
-    rawContent = await fs.readFile(sessionFile, 'utf8');
-  } catch {
-    console.log(chalk.red(`Could not read session file: ${sessionFile}`));
-    return;
+  // ── Claude Code (precise): shell wrapper stored the exact JSONL path ─────────
+  if (lastPtr.startsWith('claude-jsonl:')) {
+    const jsonlPath = lastPtr.slice('claude-jsonl:'.length);
+    service = aiService || 'claude';
+
+    let raw;
+    try {
+      raw = await fs.readFile(jsonlPath, 'utf8');
+    } catch {
+      console.log(chalk.red(`Could not read Claude session file: ${jsonlPath}`));
+      return;
+    }
+    messages = parseClaudeJsonl(raw);
+
+    if (messages.length === 0) {
+      console.log(chalk.yellow('Could not find any conversation turns in the Claude Code session.'));
+      console.log(chalk.dim(`  File: ${jsonlPath}`));
+      return;
+    }
+
+  // ── Claude Code (legacy fallback): search by cwd for most-recent JSONL ───────
+  } else if (lastPtr.startsWith('claude:')) {
+    const claudeCwd = lastPtr.slice(7);   // strip "claude:" prefix
+    service  = aiService || 'claude';
+    messages = await parseClaudeCodeSession(claudeCwd);
+
+    if (messages.length === 0) {
+      console.log(chalk.yellow('Could not find any conversation turns in the Claude Code session.'));
+      console.log(chalk.dim(`  Looked in: ${path.join(CLAUDE_PROJECTS_DIR, cwdToClaudeSlug(claudeCwd))}`));
+      return;
+    }
+
+  // ── script-recorded session (ollama, aider, openai, gemini…) ──────────────
+  } else {
+    const sessionFile  = lastPtr;
+    const toolFromFile = path.basename(sessionFile).split('-')[0];
+    service            = aiService || toolFromFile || 'ai';
+
+    let rawContent;
+    try {
+      rawContent = await fs.readFile(sessionFile, 'utf8');
+    } catch {
+      console.log(chalk.red(`Could not read session file: ${sessionFile}`));
+      return;
+    }
+
+    messages = parseSession(rawContent, service);
   }
-
-  const messages = parseSession(rawContent, service);
 
   if (messages.length === 0) {
     console.log(chalk.yellow('Could not parse any conversation turns from the session file.'));
-    console.log(chalk.dim(`  File: ${sessionFile}`));
+    console.log(chalk.dim(`  Pointer: ${lastPtr}`));
     return;
   }
 
@@ -249,14 +424,14 @@ export async function saveConversation({ title, aiService, workingDirectory } = 
     projectName     : project,
     timestamp       : new Date().toISOString(),
     _title          : eventTitle,
-    _sessionFile    : sessionFile,
+    _sessionFile    : lastPtr,
   });
 
   console.log(chalk.green('✓ Conversation saved to Dev Journal'));
   console.log(chalk.dim(`  service : ${service}`));
   console.log(chalk.dim(`  title   : ${eventTitle}`));
   console.log(chalk.dim(`  turns   : ${messages.length}`));
-  console.log(chalk.dim(`  file    : ${sessionFile}`));
+  console.log(chalk.dim(`  source  : ${lastPtr}`));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

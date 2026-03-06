@@ -72,6 +72,31 @@ async function main() {
       }
     });
 
+  // ── claude  → Claude provider subcommands ─────────────────────────────────
+  const claudeCmd = program
+    .command('claude')
+    .description('Claude AI provider commands (Claude Code + Claude desktop app)');
+
+  claudeCmd
+    .command('sync')
+    .description('Bulk-import ALL Claude Code sessions from ~/.claude/projects/ into Dev Journal')
+    .option('--dry-run',            'Show what would be sent without sending anything')
+    .option('-f, --force',          'Re-send even sessions already synced')
+    .option('-p, --project <name>', 'Only sync sessions for projects matching this name')
+    .action(async (opts) => {
+      const { syncAll } = await import('../src/syncCommand.js');
+      try {
+        await syncAll({
+          dryRun : opts.dryRun  ?? false,
+          force  : opts.force   ?? false,
+          project: opts.project ?? null,
+        });
+      } catch (err) {
+        console.error(chalk.red('Sync failed:'), err.message);
+        process.exit(1);
+      }
+    });
+
   // ── update-hooks  → refresh hook block without logout/login ──────────────
   program
     .command('update-hooks')
