@@ -1,0 +1,45 @@
+{
+  "name": "dev-journal-monitor",
+  "version": "1.0.0",
+  "description": "Developer activity monitoring CLI tool that tracks terminal activity for daily developer journals",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "dev-monitor": "./bin/index.js"
+  },
+  "scripts": {
+    "start": "node bin/index.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "keywords": [
+    "developer",
+    "journal",
+    "activity",
+    "monitor",
+    "terminal",
+    "tracking",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.0",
+    "commander": "^12.0.0",
+    "chokidar": "^3.6.0",
+    "simple-git": "^3.27.0",
+    "conf": "^12.0.0",
+    "chalk": "^5.3.0",
+    "inquirer": "^9.2.0",
+    "ora": "^8.0.0",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "scripts/",
+    "README.md"
+  ]
+}
