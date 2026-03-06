@@ -7,12 +7,12 @@
  *
  * Backend: DataNexus DevBrainController
  *   POST /api/events
- *   Authorization: Bearer <API_KEY>
+ *   Authorization: Bearer <ACCESS_TOKEN>
  *   Body: { "events": [ DevBrainEventDto ] }
  */
 
 import path from 'path';
-import { getApiKey } from './auth.js';
+import { getValidAuthSession } from './auth.js';
 
 const DEFAULT_API_URL = 'http://localhost:8080';
 const MAX_RETRIES     = 2;
@@ -96,12 +96,15 @@ function stripId({ _id, ...rest }) {
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
 
-let _apiKey  = null;
-let _baseUrl = null;
+let _accessToken = null;
+let _tokenType   = 'Bearer';
+let _baseUrl     = null;
 
 async function init() {
-  if (_apiKey) return;
-  _apiKey  = await getApiKey();
+  if (_accessToken) return;
+  const session = await getValidAuthSession();
+  _accessToken = session.accessToken;
+  _tokenType   = session.tokenType || 'Bearer';
   _baseUrl = (process.env.DEV_MONITOR_API_URL || DEFAULT_API_URL).replace(/\/$/, '');
 }
 
@@ -122,23 +125,6 @@ export async function sendEvent(event) {
   }
 }
 
-/**
- * Validate an API key by hitting GET /api/events/stats.
- * Throws on connectivity or auth failure.
- */
-export async function validateApiKey(apiKey) {
-  const { default: axios } = await import('axios');
-  const baseUrl = (process.env.DEV_MONITOR_API_URL || DEFAULT_API_URL).replace(/\/$/, '');
-
-  await axios.get(`${baseUrl}/api/events/stats`, {
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'User-Agent'   : 'dev-journal-monitor/1.0.0',
-    },
-    timeout: 8_000,
-  });
-}
-
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
 async function _post(dtoEvents) {
@@ -152,7 +138,7 @@ async function _post(dtoEvents) {
         { events: dtoEvents },
         {
           headers: {
-            'Authorization': `Bearer ${_apiKey}`,
+            'Authorization': `${_tokenType} ${_accessToken}`,
             'Content-Type' : 'application/json',
             'User-Agent'   : 'dev-journal-monitor/1.0.0',
           },
@@ -162,7 +148,16 @@ async function _post(dtoEvents) {
       return; // success
     } catch (err) {
       const status = err.response?.status;
-      if (status === 401 || status === 403) return; // auth error – don't retry
+      if (status === 401 || status === 403) {
+        try {
+          const session = await getValidAuthSession({ forceRefresh: true });
+          _accessToken = session.accessToken;
+          _tokenType   = session.tokenType || 'Bearer';
+          continue;
+        } catch {
+          return;
+        }
+      }
       if (attempt < MAX_RETRIES) await sleep(RETRY_BASE_MS * attempt);
     }
   }

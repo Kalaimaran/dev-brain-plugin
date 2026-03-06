@@ -16,12 +16,14 @@ async function main() {
   // ── login  → save key + auto-install hooks (tracking starts) ──────────────
   program
     .command('login')
-    .description('Authenticate with your API key and start tracking automatically')
-    .option('-k, --key <apiKey>', 'API key (skip interactive prompt)')
+    .description('Authenticate with email/password and start tracking automatically')
+    .option('-e, --email <email>', 'Email or username (skip prompt)')
+    .option('-u, --username <username>', 'Username (alias for --email)')
+    .option('-p, --password <password>', 'Password (skip password prompt)')
     .action(async (opts) => {
       const { login } = await import('../src/auth.js');
       try {
-        await login(opts.key);
+        await login({ email: opts.email ?? opts.username, password: opts.password });
       } catch (err) {
         console.error(chalk.red('Login failed:'), err.message);
         process.exit(1);
@@ -31,7 +33,7 @@ async function main() {
   // ── logout  → uninstall hooks + remove key (tracking stops) ───────────────
   program
     .command('logout')
-    .description('Remove your API key and stop tracking')
+    .description('Clear your auth session and stop tracking')
     .action(async () => {
       const { logout } = await import('../src/auth.js');
       try {
