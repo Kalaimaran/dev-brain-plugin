@@ -14,23 +14,12 @@ import { sendEvent }     from './apiClient.js';
 import { getGitContext } from './gitTracker.js';
 import { detectAiTool }  from './aiTracker.js';
 
-// ── Tracked command prefixes ──────────────────────────────────────────────────
-
-const TRACKED_PREFIXES = [
-  'npm', 'npx', 'pnpm', 'yarn', 'bun',
-  'node',
-  'docker', 'docker-compose', 'kubectl', 'helm',
-  'git',
-  'mvn', 'gradle', './gradlew', './mvnw',
-  'python', 'python3', 'pip', 'pip3',
-  'java', 'javac',
-  'curl', 'wget',
-  'ssh', 'scp', 'rsync',
-  'terraform', 'ansible',
-  'make',
-  // AI CLI tools – also processed by aiTracker
-  'claude', 'openai', 'gemini', 'ollama', 'aider', 'continue', 'cody',
-];
+// Git subcommands handled POST-execution by the git wrapper → skip basic event
+// to avoid duplicates (buildGitEvent sends a richer git_activity event instead)
+const GIT_RICH_SUBCOMMANDS = new Set([
+  'commit', 'push', 'pull', 'merge', 'rebase',
+  'checkout', 'reset', 'stash', 'tag', 'fetch',
+]);
 
 // Commands that are noisy / useless to track
 const IGNORED_EXACT = new Set([
@@ -47,10 +36,10 @@ function getRootCommand(command) {
 
 function isTracked(command) {
   const root = getRootCommand(command);
+  if (!root) return false;
 
   if (IGNORED_EXACT.has(root)) return false;
-
-  return TRACKED_PREFIXES.some((prefix) => root === prefix || root.endsWith('/' + prefix));
+  return true;
 }
 
 function classifyCommand(command) {
@@ -86,6 +75,14 @@ export async function trackCommand({ command, workingDirectory, exitCode = 0 }) 
 
   const cwd = workingDirectory || process.cwd();
   const eventType = classifyCommand(command);
+
+  // For git subcommands with rich post-execution handling, skip the basic event.
+  // The shell git wrapper calls `dev-monitor git-post <subcmd>` after git exits
+  // and buildGitEvent sends a full git_activity event with file-level diff data.
+  if (eventType === 'git_command') {
+    const sub = command.trim().split(/\s+/)[1] || '';
+    if (GIT_RICH_SUBCOMMANDS.has(sub)) return;
+  }
   const timestamp = new Date().toISOString();
 
   // Build base event

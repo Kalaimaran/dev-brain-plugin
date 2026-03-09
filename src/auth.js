@@ -8,16 +8,12 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
+import { getBaseUrl } from './baseUrl.js';
 
 const CONFIG_DIR  = path.join(os.homedir(), '.dev-monitor');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
-const DEFAULT_API_URL = 'http://localhost:8080';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function getBaseUrl() {
-  return (process.env.DEV_MONITOR_API_URL || DEFAULT_API_URL).replace(/\/$/, '');
-}
 
 function normalizeTokenType(tokenType) {
   return tokenType || 'Bearer';
@@ -120,7 +116,7 @@ async function clearAuthSession() {
 
 async function fetchCurrentUser(accessToken, tokenType = 'Bearer') {
   const { default: axios } = await import('axios');
-  const baseUrl = getBaseUrl();
+  const baseUrl = await getBaseUrl();
   const response = await axios.get(`${baseUrl}/api/v1/auth/me`, {
     headers: {
       'Authorization': `${normalizeTokenType(tokenType)} ${accessToken}`,
@@ -134,7 +130,7 @@ async function fetchCurrentUser(accessToken, tokenType = 'Bearer') {
 
 async function refreshTokens(refreshToken) {
   const { default: axios } = await import('axios');
-  const baseUrl = getBaseUrl();
+  const baseUrl = await getBaseUrl();
 
   const response = await axios.post(
     `${baseUrl}/api/v1/auth/refresh`,
@@ -207,8 +203,9 @@ export async function login(opts = {}) {
   const spinner = ora('Logging in...').start();
 
   try {
+    const baseUrl = await getBaseUrl();
     const response = await axios.post(
-      `${getBaseUrl()}/api/v1/auth/login`,
+      `${baseUrl}/api/v1/auth/login`,
       {
         email: identifier,
         username: identifier,

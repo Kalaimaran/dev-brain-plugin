@@ -206,7 +206,6 @@ Authorization: Bearer <USER_API_KEY>
 
 | Variable | Default | Description |
 |---|---|---|
-| `DEV_MONITOR_API_URL` | `https://api.devjournal.io` | Backend base URL |
 
 ---
 

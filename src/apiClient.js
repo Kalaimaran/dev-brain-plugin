@@ -13,8 +13,8 @@
 
 import path from 'path';
 import { getValidAuthSession } from './auth.js';
+import { getBaseUrl } from './baseUrl.js';
 
-const DEFAULT_API_URL = 'http://localhost:8080';
 const MAX_RETRIES     = 2;
 const RETRY_BASE_MS   = 500;
 
@@ -83,6 +83,10 @@ function buildGitTitle(event) {
   const parts = [`git ${event.subCommand}`];
   if (event.branch)        parts.push(`branch: ${event.branch}`);
   if (event.commitMessage) parts.push(`msg: ${event.commitMessage}`);
+  if (event.filesCount)    parts.push(`${event.filesCount} file(s) changed`);
+  if (event.totalAdditions || event.totalDeletions)
+    parts.push(`+${event.totalAdditions ?? 0} -${event.totalDeletions ?? 0}`);
+  if (event.commitsAhead)  parts.push(`${event.commitsAhead} commit(s) pushed`);
   return parts.join(' | ');
 }
 
@@ -105,7 +109,7 @@ async function init() {
   const session = await getValidAuthSession();
   _accessToken = session.accessToken;
   _tokenType   = session.tokenType || 'Bearer';
-  _baseUrl = (process.env.DEV_MONITOR_API_URL || DEFAULT_API_URL).replace(/\/$/, '');
+  _baseUrl = await getBaseUrl();
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

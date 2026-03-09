@@ -53,6 +53,37 @@ async function main() {
       await status();
     });
 
+  // ── developer-mode ─────────────────────────────────────────────────────────
+  program
+    .command('developer-mode [state]')
+    .description('Toggle API endpoint mode: on=localhost, off=production')
+    .action(async (state) => {
+      const {
+        setDeveloperModeEnabled,
+        getEndpointStatus,
+      } = await import('../src/baseUrl.js');
+
+      try {
+        const normalized = (state || 'status').trim().toLowerCase();
+        if (!['on', 'off', 'status'].includes(normalized)) {
+          throw new Error('Invalid value. Use: on, off, or status.');
+        }
+
+        if (normalized === 'on') {
+          await setDeveloperModeEnabled(true);
+        } else if (normalized === 'off') {
+          await setDeveloperModeEnabled(false);
+        }
+
+        const info = await getEndpointStatus();
+        console.log(chalk.cyan(`Developer mode: ${info.developerMode ? 'ON' : 'OFF'}`));
+        console.log(chalk.cyan(`Active endpoint: ${info.baseUrl}`));
+      } catch (err) {
+        console.error(chalk.red('developer-mode failed:'), err.message);
+        process.exit(1);
+      }
+    });
+
   // ── save  → manually capture an AI conversation ───────────────────────────
   program
     .command('save')
@@ -113,6 +144,23 @@ async function main() {
       } catch (err) {
         console.error(chalk.red('Update failed:'), err.message);
         process.exit(1);
+      }
+    });
+
+  // ── git-post  (internal — called by git wrapper AFTER git exits) ──────────
+  program
+    .command('git-post <subcmd>')
+    .description('Internal: capture rich git event after a git operation completes (called by shell git wrapper)')
+    .option('-d, --dir <directory>',        'Working directory where git was run')
+    .option('--push-log-file <path>',       'Temp file with pre-push commit log (push only)')
+    .action(async (subcmd, opts) => {
+      const { buildGitEvent } = await import('../src/gitTracker.js');
+      try {
+        await buildGitEvent(`git ${subcmd}`, opts.dir || process.cwd(), {
+          pushLogFile: opts.pushLogFile ?? null,
+        });
+      } catch {
+        // Never interrupt the shell
       }
     });
 

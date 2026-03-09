@@ -32,7 +32,7 @@ __dev_monitor_preexec() {
   local cmd="$1"
   # Avoid tracking the tracker itself
   [[ "$cmd" == dev-monitor* ]] && return
-  (dev-monitor track "$cmd" --dir "$PWD" 2>/dev/null &)
+  (dev-monitor track "$cmd" --dir "$PWD" </dev/null >/dev/null 2>&1 &)
 }
 
 # Install via DEBUG trap + PROMPT_COMMAND trick for bash
@@ -86,6 +86,31 @@ __dev_monitor_claude_wrap() {
   fi
 }
 command -v claude &>/dev/null && alias claude="__dev_monitor_claude_wrap"
+
+# Git wrapper — fires rich post-execution tracking after git commit/push/etc.
+__dev_monitor_git_wrap() {
+  local _sub="$1" _push_file=""
+  # For push: snapshot commits BEFORE they leave (after push @{u}..HEAD = 0)
+  if [[ "$_sub" == "push" ]]; then
+    _push_file="$HOME/.dev-monitor/push-$(date +%s)-$$.txt"
+    command mkdir -p "$HOME/.dev-monitor"
+    command git log '@{u}..HEAD' --format='%h|%s|%an' 2>/dev/null > "$_push_file" || rm -f "$_push_file"
+    [[ -s "$_push_file" ]] || { rm -f "$_push_file"; _push_file=""; }
+  fi
+  command git "$@"
+  local _exit=$?
+  case "$_sub" in
+    commit|push|pull|merge|rebase|checkout|reset|stash|tag|fetch)
+      if [[ -n "$_push_file" ]]; then
+        (dev-monitor git-post "$_sub" --dir "$PWD" --push-log-file "$_push_file" </dev/null >/dev/null 2>&1 &)
+      else
+        (dev-monitor git-post "$_sub" --dir "$PWD" </dev/null >/dev/null 2>&1 &)
+      fi
+      ;;
+  esac
+  return $_exit
+}
+command -v git &>/dev/null && alias git="__dev_monitor_git_wrap"
 ${HOOK_END}
 `;
 
@@ -95,7 +120,7 @@ ${HOOK_START}
 __dev_monitor_preexec() {
   local cmd="$1"
   [[ "$cmd" == dev-monitor* ]] && return
-  (dev-monitor track "$cmd" --dir "$PWD" 2>/dev/null &)
+  (dev-monitor track "$cmd" --dir "$PWD" </dev/null >/dev/null 2>&1 &)
 }
 
 autoload -Uz add-zsh-hook 2>/dev/null
@@ -137,6 +162,31 @@ __dev_monitor_claude_wrap() {
   fi
 }
 command -v claude >/dev/null 2>&1 && alias claude="__dev_monitor_claude_wrap"
+
+# Git wrapper — fires rich post-execution tracking after git commit/push/etc.
+__dev_monitor_git_wrap() {
+  local _sub="$1" _push_file=""
+  # For push: snapshot commits BEFORE they leave (after push @{u}..HEAD = 0)
+  if [[ "$_sub" == "push" ]]; then
+    _push_file="$HOME/.dev-monitor/push-$(date +%s)-$$.txt"
+    command mkdir -p "$HOME/.dev-monitor"
+    command git log '@{u}..HEAD' --format='%h|%s|%an' 2>/dev/null > "$_push_file" || rm -f "$_push_file"
+    [[ -s "$_push_file" ]] || { rm -f "$_push_file"; _push_file=""; }
+  fi
+  command git "$@"
+  local _exit=$?
+  case "$_sub" in
+    commit|push|pull|merge|rebase|checkout|reset|stash|tag|fetch)
+      if [[ -n "$_push_file" ]]; then
+        (dev-monitor git-post "$_sub" --dir "$PWD" --push-log-file "$_push_file" </dev/null >/dev/null 2>&1 &)
+      else
+        (dev-monitor git-post "$_sub" --dir "$PWD" </dev/null >/dev/null 2>&1 &)
+      fi
+      ;;
+  esac
+  return $_exit
+}
+command -v git >/dev/null 2>&1 && alias git="__dev_monitor_git_wrap"
 ${HOOK_END}
 `;
 
@@ -209,6 +259,20 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
     } else {
       [System.IO.File]::WriteAllText("\$d/.last", "claude:\$PWD")
     }
+  }
+}
+
+# Git wrapper — fires rich post-execution tracking after git commit/push/etc.
+\$__dm_git_exe = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)?.Source
+if (\$__dm_git_exe) {
+  function global:git {
+    & \$global:__dm_git_exe @args
+    \$exit = \$LASTEXITCODE
+    \$sub  = if (\$args.Count -gt 0) { \$args[0] } else { '' }
+    if (\$sub -in @('commit','push','pull','merge','rebase','checkout','reset','stash','tag','fetch')) {
+      Start-Job -ScriptBlock { dev-monitor git-post \$using:sub --dir \$using:PWD } | Out-Null
+    }
+    return \$exit
   }
 }
 ${PS_HOOK_END}
