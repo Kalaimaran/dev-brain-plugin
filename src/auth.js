@@ -205,7 +205,7 @@ export async function login(opts = {}) {
   try {
     const baseUrl = await getBaseUrl();
     const response = await axios.post(
-      `${baseUrl}/api/v1/auth/login`,
+      `${baseUrl}/api/v1/auth/login/ext`,
       {
         email: identifier,
         username: identifier,
